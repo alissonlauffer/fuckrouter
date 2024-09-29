@@ -2,5 +2,7 @@
 Description=Fuck router
 
 [Service]
-Type=simple
 ExecStart=fuckrouter
+
+[Install]
+WantedBy=network-online.target

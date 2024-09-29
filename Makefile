@@ -16,12 +16,11 @@ install: $(TARGET)
 	install -D -m 0755 $(TARGET) $(BINDIR)/$(TARGET)
 	# Install the systemd service and timer
 	install -D -m 0644 fuckrouter.service $(SERVICEDIR)/fuckrouter.service
-	install -D -m 0644 fuckrouter.timer $(SERVICEDIR)/fuckrouter.timer
 
 	# Reload systemd daemon
 	systemctl daemon-reload
 	# Enable and start the service
-	systemctl enable --now fuckrouter.timer
+	systemctl enable --now fuckrouter.service
 
 # Clean the build
 clean:
