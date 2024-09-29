@@ -1,0 +1,9 @@
+[Unit]
+Description=Fuck router
+
+[Timer]
+OnActiveSec=1s
+OnUnitActiveSec=1s
+
+[Install]
+WantedBy=network-online.target

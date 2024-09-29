@@ -143,7 +143,8 @@ int main(int argc, char *argv[]) {
         // Assign a new address with ::1 ending and /64 prefix
         char new_prefix[INET6_ADDRSTRLEN];
         strncpy(new_prefix, ipv6_str,
-                strlen(ipv6_str)); // Copy the entire address
+                sizeof(new_prefix) - 1);           // Copy the entire address
+        new_prefix[sizeof(new_prefix) - 1] = '\0'; // Ensure null-termination
         char *fourth_colon = strchr(
             strchr(strchr(strchr(new_prefix, ':') + 1, ':') + 1, ':') + 1, ':');
         if (fourth_colon) {

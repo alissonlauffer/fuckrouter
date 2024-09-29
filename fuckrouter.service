@@ -1,0 +1,6 @@
+[Unit]
+Description=Fuck router
+
+[Service]
+Type=simple
+ExecStart=fuckrouter
