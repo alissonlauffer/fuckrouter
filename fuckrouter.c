@@ -41,7 +41,7 @@ int send_netlink_command(int sock, struct nlmsghdr *nlh,
 }
 
 int delete_ipv6_address(const char *interface, const char *ipv6_address) {
-  int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+  int sock = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
   if (sock < 0) {
     perror("socket");
     return -1;
@@ -54,19 +54,29 @@ int delete_ipv6_address(const char *interface, const char *ipv6_address) {
   } req = {0};
 
   req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-  req.nlh.nlmsg_flags = NLM_F_REQUEST;
+  req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
   req.nlh.nlmsg_type = RTM_DELADDR;
+  req.nlh.nlmsg_seq = 1;
 
   req.ifa.ifa_family = AF_INET6;
   req.ifa.ifa_prefixlen = IPV6_PREFIX_LEN;
   req.ifa.ifa_index = if_nametoindex(interface);
+  if (req.ifa.ifa_index == 0) {
+    perror("if_nametoindex");
+    close(sock);
+    return -1;
+  }
 
   struct rtattr *rta =
       (struct rtattr *)(((char *)&req) + NLMSG_ALIGN(req.nlh.nlmsg_len));
   rta->rta_type = IFA_LOCAL;
   rta->rta_len = RTA_LENGTH(16);
 
-  inet_pton(AF_INET6, ipv6_address, RTA_DATA(rta));
+  if (inet_pton(AF_INET6, ipv6_address, RTA_DATA(rta)) <= 0) {
+    perror("inet_pton");
+    close(sock);
+    return -1;
+  }
   req.nlh.nlmsg_len = NLMSG_ALIGN(req.nlh.nlmsg_len) + rta->rta_len;
 
   struct sockaddr_nl sa = {.nl_family = AF_NETLINK};
@@ -113,7 +123,7 @@ int assign_ipv6_address(const char *interface, const char *prefix) {
     return 0;
   }
 
-  int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+  int sock = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (sock < 0) {
     perror("socket");
     return -1;
@@ -127,6 +137,11 @@ int assign_ipv6_address(const char *interface, const char *prefix) {
   }
 
   ifr6.ifr6_ifindex = if_nametoindex(interface);
+  if (ifr6.ifr6_ifindex == 0) {
+    perror("if_nametoindex");
+    close(sock);
+    return -1;
+  }
   ifr6.ifr6_prefixlen = IPV6_PREFIX_LEN;
 
   if (ioctl(sock, SIOCSIFADDR, &ifr6) < 0) {
@@ -142,17 +157,22 @@ int assign_ipv6_address(const char *interface, const char *prefix) {
 
 int is_public_ipv6(const char *ipv6) {
   struct in6_addr addr;
-  inet_pton(AF_INET6, ipv6, &addr);
+  if (inet_pton(AF_INET6, ipv6, &addr) <= 0) {
+    return 0;
+  }
   return (ntohl(addr.s6_addr32[0]) & 0xe0000000) == 0x20000000;
 }
 
 void process_ipv6_address(const char *interface, const char *ipv6_str) {
   if (is_public_ipv6(ipv6_str) &&
       (strcmp(ipv6_str + strlen(ipv6_str) - 3, "::1") != 0)) {
-    printf("Invalid IPv6 address %s found. Deleting and assigning a new one.\n",
-           ipv6_str);
+    printf("Invalid IPv6 address %s found on interface %s. Deleting and "
+           "assigning a new one.\n",
+           ipv6_str, interface);
 
-    delete_ipv6_address(interface, ipv6_str);
+    if (delete_ipv6_address(interface, ipv6_str) != 0) {
+      return;
+    }
 
     char new_prefix[INET6_ADDRSTRLEN];
     strncpy(new_prefix, ipv6_str, sizeof(new_prefix) - 1);
@@ -174,8 +194,6 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  const char *interface = "enp4s0";
-
   struct ifaddrs *ifap, *ifa;
   char ipv6_str[INET6_ADDRSTRLEN];
 
@@ -185,17 +203,16 @@ int main(int argc, char *argv[]) {
   }
 
   for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET6 &&
-        strcmp(ifa->ifa_name, interface) == 0) {
+    if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET6) {
       struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
       inet_ntop(AF_INET6, &sin6->sin6_addr, ipv6_str, sizeof(ipv6_str));
-      process_ipv6_address(interface, ipv6_str);
+      process_ipv6_address(ifa->ifa_name, ipv6_str);
     }
   }
 
   freeifaddrs(ifap);
 
-  int nl_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+  int nl_sock = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
   if (nl_sock < 0) {
     perror("Failed to create netlink socket");
     exit(EXIT_FAILURE);
@@ -214,7 +231,8 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  printf("Monitoring IPv6 address changes. Press Ctrl+C to exit.\n");
+  printf("Monitoring IPv6 address changes on all interfaces. Press Ctrl+C to "
+         "exit.\n");
 
   while (keep_running) {
     char buf[BUFLEN];
@@ -239,13 +257,11 @@ int main(int argc, char *argv[]) {
         char if_name[IF_NAMESIZE] = {0};
         if_indextoname(ifa->ifa_index, if_name);
 
-        if (strcmp(if_name, interface) == 0) {
-          for (; RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
-            if (rth->rta_type == IFA_ADDRESS) {
-              char ipv6_str[INET6_ADDRSTRLEN];
-              inet_ntop(AF_INET6, RTA_DATA(rth), ipv6_str, sizeof(ipv6_str));
-              process_ipv6_address(interface, ipv6_str);
-            }
+        for (; RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
+          if (rth->rta_type == IFA_ADDRESS) {
+            char ipv6_str[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, RTA_DATA(rth), ipv6_str, sizeof(ipv6_str));
+            process_ipv6_address(if_name, ipv6_str);
           }
         }
       }
